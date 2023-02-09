@@ -1,0 +1,11 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.zip
+# tables
+*.csv
+*.ts
+
+#big netCDF data
+*.nc
