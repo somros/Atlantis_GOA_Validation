@@ -86,7 +86,7 @@ catch_comp <- catch_obs %>%
   pivot_longer(c(obs, pred), names_to = 'Type', values_to = 'Catch')
 
 catch_comp %>%
-  filter(Year < 1996) %>%
+  #filter(Year < 1996) %>%
   ggplot(aes(x = Year, y = Catch, color = Type))+
   geom_point()+
   geom_line()+
@@ -96,3 +96,5 @@ catch_comp %>%
 # shows struggle with migrating species
 # odd phenomenon for some groups of some catch at t1 and then flattens out - investigate
 # I suspect F is still operating then (possibly for part of the year only)
+
+# showcasing problem with Capelin if we have it as 0 in the catch - it will explode
