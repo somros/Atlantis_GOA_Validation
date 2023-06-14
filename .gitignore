@@ -5,6 +5,7 @@
 *.zip
 # tables
 *.csv
+*.png
 *.ts
 
 #big netCDF data
