@@ -1,0 +1,200 @@
+---
+title: "Plots for catch by age from NetCDF output"
+author: "Alberto Rovellini"
+date: "6/16/2023"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = FALSE,warnings=FALSE)
+library(tidyverse)
+library(sf)
+library(rbgm)
+library(tidync)
+library(magrittr)
+library(cowplot)
+library(here)
+library(viridis)
+library(rnaturalearth)
+library(reshape2)
+library(RColorBrewer)
+library(tictoc)
+
+# ggplot theme
+plot_theme <-   theme_minimal()+
+  theme(text=element_text(family="sans",size=10,color="black"),
+        legend.text = element_text(size=10),
+        axis.title=element_text(family="sans",size=14,color="black"),
+        axis.text=element_text(family="sans",size=8,color="black"),
+        panel.grid.major = element_line(color="gray50",linetype=3))
+theme_set(plot_theme)
+
+options(dplyr.summarise.inform = FALSE)
+sf_use_s2(FALSE)
+```
+
+Output directory to check
+```{r}
+this_no <- '1275'
+burn_in <- 8
+#this_run <- '01'
+```
+
+```{r}
+this.dir <- paste0('C:/Users/Alberto Rovellini/Documents/GOA/Parametrization/output_files/data/out_', this_no)#, '_', this_run)
+```
+
+```{r spatial data,include=F,echo=F}
+# file name here of downloaded .bgm file from current Atlantis model
+
+# IF RUNNING AS PART OF MANAGE_ATLANTIS_RUNS, THE source.dir should be inherited here
+# source.dir <- "Atlantis_0100"
+#source.dir <- "AtlantisCalCurrV4_03"
+# here() #should == "/home/atlantis"
+fl <- paste(this.dir,'GOA_WGS84_V4_final.bgm',sep='/')
+# load the file
+bgm <- read_bgm(fl)
+# names(bgm)
+goa_sf <- box_sf(bgm)
+goa_sf <- goa_sf %>% mutate(box_id = box_id+1) #ALBI: adding this for correct matching of boxes
+st_crs(goa_sf) <- st_crs(attr(goa_sf$geometry, "crs")$proj)
+
+# load west cost land for mapping
+coaststates <- ne_countries(continent="North America",returnclass = 'sf') %>% 
+  filter(name %in% c('Canada','United States'))
+```
+
+```{r functional groups table,include=F,echo=F,message=F}
+grps <- read_csv('../data/GOA_Groups.csv')
+
+# set up a functional group types table
+vertebrate_groups <- grps %>% filter(GroupType%in%c("FISH","SHARK","BIRD","MAMMAL")) %>% mutate(BiomassType="vertebrate")
+plankton_groups <- grps %>% filter(GroupType %in% c("PWN",'CEP','LG_ZOO','MED_ZOO','SM_ZOO','LG_PHY','SM_PHY')) %>% 
+  mutate(BiomassType="plankton")
+bottom_groups <- grps %>% filter(GroupType %in% c("MOB_EP_OTHER",'SED_EP_FF','SED_EP_OTHER','PHYTOBEN')) %>% 
+  mutate(BiomassType="2D")
+other_groups <- grps %>% filter(GroupType %in% c("LG_INF","MICROPHTYBENTHOS","SED_BACT","PL_BACT","SM_INF","CARRION","LAB_DET","REF_DET"))%>% 
+  mutate(BiomassType="other")
+biomass_groups <- bind_rows(vertebrate_groups,plankton_groups,bottom_groups,other_groups)
+
+# add to grps df
+grps <- grps %>% left_join(biomass_groups)
+```
+
+```{r load atlantis output,include=F,echo=F}
+tic("Loading files: ")
+# output file
+out_fl <- paste(this.dir, paste0('outputGOA', '0', this_no, '_testCATCH.nc'),sep='/')
+out <- tidync(out_fl)
+this.nc <- ncdf4::nc_open(out_fl)
+
+# derived values for output
+# depths <- out %>% hyper_filter(t=t==0) %>% hyper_tibble(select_var="dz") %>% dplyr::select(-t)
+# glimpse(depths)
+
+# volumes of each layer
+volumes <- out %>% hyper_filter(t=t==0) %>% hyper_tibble(select_var="volume") %>% dplyr::select(-t)
+
+# time dimension
+ts <- ncdf4::ncvar_get(this.nc,varid = "t") %>% as.numeric
+tyrs <- ts/(60*60*24*365)
+
+# area of each box is the same as volume of the deepest depth layer, because the dz of that layer is 1
+areas <- volumes %>% filter(z==max(z)) %>% dplyr::select(b,volume) %>% rename(area=volume)
+
+# functional group dimensions
+fg_dimensions <- hyper_grids(out) %>% 
+  pluck("grid") %>% 
+  purrr::map_df(function(x){
+    out %>% activate(x) %>% hyper_vars() %>% 
+      mutate(grd=x)
+  })
+```
+
+Important function to remove the boundary box values from these calculations
+
+```{r}
+boundary_boxes <- goa_sf %>% filter(boundary == TRUE) %>% pull(box_id)
+
+setNA <- function(mat) {
+  mat2 <- mat
+  if(length(dim(mat2))==3) mat2[,boundary_boxes,]<-NA
+  if(length(dim(mat2))==2) mat2[boundary_boxes,] <- NA
+  mat2
+}
+```
+
+```{r abun fxn,include=F,echo=F}
+# for abundance
+plot_catch <- function(fg){
+  
+  # if the species is TURNED OFF, return an empty plot
+  if(grps$IsTurnedOn[grps$Name==fg]==0) return(tibble(t=0,catch=0) %>% ggplot(aes(t,catch))+geom_blank())
+  # get the attributes associated with each functional group
+  fg_atts <- grps %>% filter(Name==fg)
+  #Extract from the output .nc file the appropriate time series variables
+  catch_vars <- hyper_vars(out %>% activate('D1,D0')) %>% # all variables in the .nc file active grid
+    filter(grepl("_Catch",name)) %>% # filter for abundance variables
+    filter(grepl(fg,name)) # filter for specific functional group
+# Actually pull the data from the .nc
+  catch1 <- purrr::map(catch_vars$name,ncdf4::ncvar_get,nc=this.nc) %>% 
+    lapply(setNA)
+  
+  catch2 <- list()
+
+  for(i in 1:length(catch1)){
+    
+    this_age_group <- catch1[[i]]
+    
+    this_age_group <- this_age_group %>%
+      data.frame() %>%
+      set_names(0:40) %>%
+      summarise(across(everything(), ~ sum(.x, na.rm = TRUE))) %>%
+      #mutate(box_id = 0:(nrow(.)-1)) %>%
+      pivot_longer(cols = everything(), names_to = 't', values_to = 'catch') %>%
+      mutate(t = as.numeric(t),
+             age_group = catch_vars$name[i],
+             age = parse_number(age_group))
+    
+    catch2[[i]] <- this_age_group
+  }
+  
+  catch3 <- catch2 %>% bind_rows()
+  
+  # filter time
+  catch3 <- catch3 %>%
+    filter(t < max(tyrs), t > burn_in)
+  
+  # plot
+  plot_out <- catch3 %>%
+    filter(t>0) %>% # remove plotting artifact
+    ggplot(aes(t,catch/1e6,col=factor(age)))+
+    geom_line()+
+    labs(col="Age Group",y="Catch",x="Year",title=paste0(fg_atts$LongName,"\nCatch"))
+  
+  return(plot_out)
+  
+}
+```
+
+```{r calc plots,warning=FALSE,message=F}
+# Here we calculate and store the actual plots
+# catch
+tic("Abundance plots: ")
+verts <- grps %>% filter(GroupType%in%c("FISH","SHARK","BIRD","MAMMAL")) %>% pluck('Name')
+verts_catch_at_a <- purrr::map(verts,~plot_catch(.))
+verts_names <- grps %>% filter(GroupType%in%c("FISH","SHARK","BIRD","MAMMAL")) %>% pluck('LongName')
+toc()
+```
+
+# Catch Timeseries {.tabset .tabset-pills}
+
+```{r catch,fig.height=6,fig.width=8,results='asis'}
+if(length(verts_catch_at_a)>0){
+  for(i in 1:length(verts_catch_at_a)){
+    cat("  \n##",  verts_names[i],"  \n")
+    print(verts_catch_at_a[[i]]) 
+    cat("  \n")
+  }
+}
+```

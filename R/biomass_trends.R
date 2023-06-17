@@ -2,6 +2,8 @@
 # 02/09/2023
 # Validating biomass trends
 
+rm(list = ls())
+
 library(dplyr)
 library(tidyr)
 library(ggplot2)
@@ -10,14 +12,14 @@ library(ggplot2)
 atlantis_fg <- read.csv('data/GOA_Groups.csv')
 
 # open a recent run
-this_run <- 1267
+this_run <- 1275
 this_dir <- paste0('C:/Users/Alberto Rovellini/Documents/GOA/Parametrization/output_files/data/out_', this_run)
 # get biomass txt file
 biom_file <- paste0('outputGOA0', this_run, '_testBiomIndx.txt')
 biom_output <- read.table(paste(this_dir, biom_file, sep = '/'), header = TRUE)
 
 # some run properties to change
-imposecatchstart <- 14600 # number of days before catch.ts kicks in, as in force.prm file
+imposecatchstart <- 2920 # number of days before catch.ts kicks in, as in force.prm file
 # imposecatchstart <- 2920 # number of days before catch.ts kicks in, as in force.prm file
 burn_in <- imposecatchstart / 365 
 
@@ -76,7 +78,7 @@ bc <- bc %>%
 # TODO: fix this - either figure out an expansion factor or get more data for BC for recent years
 
 obs <- ak %>%
-  left_join(bc, by = c('Year','Group')) %>%
+  full_join(bc, by = c('Year','Group')) %>%
   filter(Year >= 1990) %>%
   rowwise() %>%
   mutate(both = ifelse(is.na(TB_ak) | is.na(TB_bc), 'n', 'y')) %>%
@@ -117,7 +119,8 @@ t0 <- biom_output %>%
   filter(Name %in% biom_comp$Name)
 
 # plot
-biom_comp %>%
+plot_biom <- biom_comp %>%
+  filter(Year < 2018) %>% # this is because several assessment stop around then so obs is incomplete
   ggplot(aes(x = Year, y = mt, color = Type))+
   geom_point(size = 2)+
   geom_line(linewidth = 1)+
@@ -125,6 +128,9 @@ biom_comp %>%
   geom_hline(data = t0, aes(yintercept = TB), color = 'orange', linetype = 'dashed', linewidth = 1.4)+
   theme_bw()+
   facet_wrap(~Name, scales = 'free')
+plot_biom
+
+ggsave(paste('output/biomass', this_run, 'png', sep = '.'), plot_biom, width = 12, height = 10)
 
 # plot relative biomass index over the time series
 # But this hides issues with scale and we need to be upfront
@@ -132,7 +138,8 @@ biom_comp_rel <- biom_comp %>%
   left_join((biom_comp %>% filter(Year == min(Year)) %>% rename(mt_start = mt) %>% select(Name, Type, mt_start))) %>%
   mutate(biom_rel = mt / mt_start)
 
-biom_comp_rel %>%
+plot_biom_rel <- biom_comp_rel %>%
+  filter(Year < 2018) %>% # this is because several assessment stop around then so obs is incomplete
   ggplot(aes(x = Year, y = biom_rel, color = Type))+
   geom_point(size = 2)+
   geom_line(linewidth = 1)+
@@ -140,3 +147,6 @@ biom_comp_rel %>%
   geom_hline(yintercept = 1, color = 'orange', linetype = 'dashed', linewidth = 1.4)+
   theme_bw()+
   facet_wrap(~Name, scales = 'free')
+plot_biom_rel
+
+ggsave(paste('output/biomass_rel', this_run, 'png', sep = '.'), plot_biom_rel, width = 12, height = 10)

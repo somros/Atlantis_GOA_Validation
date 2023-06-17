@@ -14,6 +14,10 @@ library(ggplot2)
 library(lubridate)
 library(data.table)
 
+# open a recent run
+this_run <- 1275
+this_dir <- paste0('C:/Users/Alberto Rovellini/Documents/GOA/Parametrization/output_files/data/out_', this_run)
+
 # read in model groups
 atlantis_fg <- read.csv('data/GOA_Groups.csv')
 
@@ -22,11 +26,8 @@ origin_year <- 1990 # this should be the start of the model run, as per init.nc
 origin <- as.Date(paste0(origin_year, '-01-01')) # what year did the catch start?
 imposecatchstart <- 2920
 catch_init <- (imposecatchstart / 365) + 1 # First year of catch.ts in the model 
-catch_init <- catch_init + 1 # catch.txt output file has an empty row at the start
+catch_init <- catch_init + 1 # catch.txt output file has an empty row at the start, this is not necessary for biomass file
 
-# open a recent run
-this_run <- 1208
-this_dir <- paste0('C:/Users/Alberto Rovellini/Documents/GOA/Parametrization/output_files/data/out_', this_run)
 # get catch txt file
 catch_file <- paste0('outputGOA0', this_run, '_testCatch.txt')
 catch_output <- read.table(paste(this_dir, catch_file, sep = '/'), header = TRUE)
@@ -90,14 +91,18 @@ catch_comp <- catch_obs %>%
   rename(input = Catch.x, output = Catch.y) %>%
   pivot_longer(c(input, output), names_to = 'Type', values_to = 'Catch')
 
-catch_comp %>%
+catch_plot <- catch_comp %>%
   #filter(Year < 1996) %>%
+  filter(Name %in% (atlantis_fg %>% filter(GroupType == 'FISH') %>% pull(Name))) %>%
   ggplot(aes(x = Year, y = Catch, color = Type))+
   geom_point()+
   geom_line()+
   scale_color_viridis_d(begin = 0.2, end = 0.8)+
   theme_bw()+
   facet_wrap(~Name, scales = 'free')
+catch_plot
+
+ggsave(paste('output/catch', this_run, 'png', sep = '.'), catch_plot, width = 12, height = 10)
 
 # shows struggle with migrating species
 # showcasing problem with Capelin if we have it as 0 in the catch - it will explode (solution is set the first years constant)
