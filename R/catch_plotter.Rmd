@@ -5,7 +5,7 @@ date: "6/16/2023"
 output: html_document
 ---
 
-```{r}
+```{r theme setup, include = F, echo=F}
 knitr::opts_chunk$set(echo = FALSE,warnings=FALSE)
 library(tidyverse)
 library(sf)
@@ -19,6 +19,7 @@ library(rnaturalearth)
 library(reshape2)
 library(RColorBrewer)
 library(tictoc)
+library(ggridges)
 
 # ggplot theme
 plot_theme <-   theme_minimal()+
@@ -34,23 +35,14 @@ sf_use_s2(FALSE)
 ```
 
 Output directory to check
-```{r}
+```{r set paths, include=F, echo=F}
 this_no <- '1275'
 burn_in <- 8
 #this_run <- '01'
-```
-
-```{r}
 this.dir <- paste0('C:/Users/Alberto Rovellini/Documents/GOA/Parametrization/output_files/data/out_', this_no)#, '_', this_run)
 ```
 
 ```{r spatial data,include=F,echo=F}
-# file name here of downloaded .bgm file from current Atlantis model
-
-# IF RUNNING AS PART OF MANAGE_ATLANTIS_RUNS, THE source.dir should be inherited here
-# source.dir <- "Atlantis_0100"
-#source.dir <- "AtlantisCalCurrV4_03"
-# here() #should == "/home/atlantis"
 fl <- paste(this.dir,'GOA_WGS84_V4_final.bgm',sep='/')
 # load the file
 bgm <- read_bgm(fl)
@@ -84,9 +76,14 @@ grps <- grps %>% left_join(biomass_groups)
 ```{r load atlantis output,include=F,echo=F}
 tic("Loading files: ")
 # output file
-out_fl <- paste(this.dir, paste0('outputGOA', '0', this_no, '_testCATCH.nc'),sep='/')
+out_fl <- paste(this.dir, paste0('outputGOA', '0', this_no, '_test.nc'),sep='/')
 out <- tidync(out_fl)
-this.nc <- ncdf4::nc_open(out_fl)
+this_nc <- ncdf4::nc_open(out_fl)
+
+# catch output file
+out_fl_catch <- paste(this.dir, paste0('outputGOA', '0', this_no, '_testCATCH.nc'),sep='/')
+out_catch <- tidync(out_fl_catch)
+this_nc_catch <- ncdf4::nc_open(out_fl_catch)
 
 # derived values for output
 # depths <- out %>% hyper_filter(t=t==0) %>% hyper_tibble(select_var="dz") %>% dplyr::select(-t)
@@ -96,24 +93,40 @@ this.nc <- ncdf4::nc_open(out_fl)
 volumes <- out %>% hyper_filter(t=t==0) %>% hyper_tibble(select_var="volume") %>% dplyr::select(-t)
 
 # time dimension
-ts <- ncdf4::ncvar_get(this.nc,varid = "t") %>% as.numeric
+ts <- ncdf4::ncvar_get(this_nc,varid = "t") %>% as.numeric
 tyrs <- ts/(60*60*24*365)
 
 # area of each box is the same as volume of the deepest depth layer, because the dz of that layer is 1
 areas <- volumes %>% filter(z==max(z)) %>% dplyr::select(b,volume) %>% rename(area=volume)
 
 # functional group dimensions
-fg_dimensions <- hyper_grids(out) %>% 
-  pluck("grid") %>% 
-  purrr::map_df(function(x){
-    out %>% activate(x) %>% hyper_vars() %>% 
-      mutate(grd=x)
-  })
+# fg_dimensions <- hyper_grids(out) %>% 
+#   pluck("grid") %>% 
+#   purrr::map_df(function(x){
+#     out %>% activate(x) %>% hyper_vars() %>% 
+#       mutate(grd=x)
+#   })
+```
+
+```{r load harvest input,include=F,echo=F}
+# read in harvest.prm parameter file
+harvest_prm <- readLines(paste(this.dir, 'GOA_harvest_background.prm',sep='/'))
+
+# get table with input CatchTS_agedistribXXX values
+parnames <- harvest_prm[grep('CatchTS_agedistrib', harvest_prm)]
+parvals <- harvest_prm[grep('CatchTS_agedistrib', harvest_prm)+1]
+agedistrib <- strsplit(parvals, split = ' ') %>%
+  lapply(.,function(x){x %>% as.numeric() %>% matrix(nrow=1) %>% data.frame()}) %>%
+  bind_rows() %>%
+  set_names(1:10) %>%
+  mutate(Code = gsub(' ','',gsub(' .*','',gsub('CatchTS_agedistrib','',parnames)))) %>%
+  pivot_longer(-Code, names_to = 'age', values_to = 'prop') %>%
+  left_join(grps %>% dplyr::select(Code, Name)) 
 ```
 
 Important function to remove the boundary box values from these calculations
 
-```{r}
+```{r boundary,include=F,echo=F}
 boundary_boxes <- goa_sf %>% filter(boundary == TRUE) %>% pull(box_id)
 
 setNA <- function(mat) {
@@ -124,24 +137,24 @@ setNA <- function(mat) {
 }
 ```
 
-```{r abun fxn,include=F,echo=F}
-# for abundance
-plot_catch <- function(fg){
+```{r catch fxn,include=F,echo=F}
+# for catch
+plot_catch <- function(fg,type){
   
   # if the species is TURNED OFF, return an empty plot
   if(grps$IsTurnedOn[grps$Name==fg]==0) return(tibble(t=0,catch=0) %>% ggplot(aes(t,catch))+geom_blank())
   # get the attributes associated with each functional group
   fg_atts <- grps %>% filter(Name==fg)
   #Extract from the output .nc file the appropriate time series variables
-  catch_vars <- hyper_vars(out %>% activate('D1,D0')) %>% # all variables in the .nc file active grid
-    filter(grepl("_Catch",name)) %>% # filter for abundance variables
+  catch_vars <- hyper_vars(out_catch %>% activate('D1,D0')) %>% # all variables in the .nc file active grid
+    filter(grepl("_Catch",name)) %>% # filter for catch variables - these are numbers by age
     filter(grepl(fg,name)) # filter for specific functional group
-# Actually pull the data from the .nc
-  catch1 <- purrr::map(catch_vars$name,ncdf4::ncvar_get,nc=this.nc) %>% 
+  # Actually pull the data from the .nc
+  catch1 <- purrr::map(catch_vars$name,ncdf4::ncvar_get,nc=this_nc_catch) %>% 
     lapply(setNA)
   
   catch2 <- list()
-
+  
   for(i in 1:length(catch1)){
     
     this_age_group <- catch1[[i]]
@@ -162,38 +175,190 @@ plot_catch <- function(fg){
   catch3 <- catch2 %>% bind_rows()
   
   # filter time
-  catch3 <- catch3 %>%
-    filter(t < max(tyrs), t > burn_in)
+  catch3 <- catch3 #%>%
+  #filter(t < max(tyrs))#, t > burn_in) # drop last year as it often is not fully recorded?
   
-  # plot
-  plot_out <- catch3 %>%
-    filter(t>0) %>% # remove plotting artifact
-    ggplot(aes(t,catch/1e6,col=factor(age)))+
-    geom_line()+
-    labs(col="Age Group",y="Catch",x="Year",title=paste0(fg_atts$LongName,"\nCatch"))
+  ###########################################################################################
+  # now bring in weight at age, because catch3 contains numbers and we want catch in biomass
+  #Extract from the output .nc file the appropriate reserve N time series variables
+  resN_vars <- hyper_vars(out) %>% # all variables in the .nc file active grid
+    filter(grepl("_ResN",name)) %>% # filter for abundance variables
+    filter(grepl(fg,name)) # filter for specific functional group
+  
+  #Extract from the output .nc file the appropriate structural N time series variables
+  strucN_vars <- hyper_vars(out) %>% # all variables in the .nc file active grid
+    filter(grepl("_StructN",name)) %>% # filter for abundance variables
+    filter(grepl(fg,name)) # filter for specific functional group
+  
+  # Get numbers by box
+  abun_vars <- hyper_vars(out) %>% # all variables in the .nc file active grid
+    filter(grepl("_Nums",name)) %>% # filter for abundance variables
+    filter(grepl(fg,name)) # filter for specific functional group
+  
+  if(nrow(resN_vars)==0) {return("no data.")}
+  else {
+    # # Actually pull the data from the .nc
+    resN <- purrr::map(resN_vars$name,ncdf4::ncvar_get,nc=this_nc) 
+    strucN <- purrr::map(strucN_vars$name,ncdf4::ncvar_get,nc=this_nc)
+    nums <-purrr::map(abun_vars$name,ncdf4::ncvar_get,nc=this_nc) #numbers by age group,box,layer,time
+    totnums <-nums %>% purrr::map(apply,MARGIN=3,FUN=sum) # total numbers by age group, time
+    relnums <- purrr::map2(nums,totnums,sweep,MARGIN=3,FUN=`/`) # divide nums by totnums along the time axis to get relative annual nums per age group/box/layer
+    
+    # add the two matrices to get total nitrogen weight
+    rnsn <- purrr::map2(resN,strucN,`+`)
+    
+    # multiply and sum to get abundance-weighted mean weight at age
+    rnsn_summ <- purrr::map2(rnsn,relnums,`*`) %>% 
+      purrr::map(apply,MARGIN=3,FUN=sum) %>% # mean total N by time
+      bind_cols() %>% # bind age groups elements together
+      suppressMessages() %>% 
+      set_names(resN_vars$name) %>% 
+      mutate(t=tyrs) %>%
+      # pivot to long form
+      pivot_longer(cols = contains(fg_atts$Name),names_to = 'age_group',values_to = 'totN') %>%
+      mutate(age=parse_number(age_group)) %>% 
+      mutate(weight=totN*20*5.7/1000000) %>%   # convert totN to weight/individual in kg
+      dplyr::filter(t %in% 0:max(tyrs)) # this is because the catch netcdf is not written out as frequently
+    
+  }
+  
+  ###########################################################################################
+  # add in numbers per time step
+  abun1 <- purrr::map(abun_vars$name,ncdf4::ncvar_get,nc=this_nc) %>% 
+    lapply(setNA) %>%
+    purrr::map(apply,MARGIN=3,FUN=sum,na.rm=T) %>% 
+    bind_cols() %>% 
+    suppressMessages() %>% 
+    set_names(abun_vars$name) %>% 
+    mutate(t=tyrs) %>%
+    dplyr::filter(t %in% 0:max(tyrs)) # this is because the catch netcdf is not written out as frequently
+  
+  abun2 <- abun1 %>%
+    pivot_longer(cols = contains(fg_atts$Name),names_to = 'age_group',values_to = 'abun') %>%
+    mutate(age=parse_number(age_group))
+  
+  ###########################################################################################
+  # now join catch in numbers with the weight at age over time and by age class and total numbers
+  catch4 <- catch3 %>%
+    left_join(rnsn_summ %>% dplyr::select(t, age, weight)) %>%
+    left_join(abun2 %>% dplyr::select(t, age, abun)) %>%
+    mutate(catch_mt = catch * weight / 1000, # go from kg to t
+           selex = catch / abun) %>%# get selectivity in numbers
+    rowwise() %>%
+    mutate(selex = ifelse(selex>1,NA,selex)) %>% # if more individuals are caught than there are, it means they have gone / are going exctinct
+    ungroup()
+  
+  # make a different plot depending on the type argument
+  
+  if(type == 'ts'){
+    
+    # plot
+    plot_out <- catch4 %>%
+      filter(t>0) %>% # remove plotting artifact
+      ggplot(aes(t,catch_mt,col=factor(age)))+
+      geom_line()+
+      geom_vline(xintercept = burn_in, color = 'red', linetype = 'dashed')+
+      labs(col="Age Group",y="Catch (mt)",x="Year",title=paste0(fg_atts$LongName,"\nCatch"))
+    
+  } else if (type == 'prop') {
+    
+    this_agedistrib <- agedistrib %>%
+      filter(Name == fg) %>%
+      mutate(t = burn_in, type = 'input', age = as.numeric(age)) %>%
+      dplyr::select(type, t, age, prop)
+    
+    plot_out <- catch4 %>%
+      filter(t>0) %>% # remove plotting artifact
+      group_by(t) %>%
+      mutate(tot_catch = sum(catch_mt)) %>%
+      ungroup() %>%
+      mutate(type = 'output', prop = catch_mt / tot_catch) %>%
+      dplyr::select(type,t,age,prop) %>%
+      rbind(this_agedistrib) %>%
+      ggplot(aes(t,prop,fill=factor(age)))+
+      geom_bar(stat = 'identity', position = 'stack')+
+      geom_vline(xintercept = burn_in, color = 'red', linetype = 'dashed')+
+      labs(fill="Age Group",y="Proportion of total catch",x="Year",title=paste0(fg_atts$LongName,"\nCatchTS_agedistribXXX"))+
+      facet_grid(~type, scales = 'free_x', space = 'free_x')
+    
+  } else if (type == 'selex') {
+    
+    plot_out <- catch4 %>%
+      filter(t %in% seq(min(t), max(t), 8)) %>% # don't need one per year, thin them out
+      filter(t < max(tyrs)) %>%
+      ggplot(aes(x = age, y = selex))+
+      geom_line(linewidth = 1)+
+      theme_bw()+
+      scale_x_continuous(breaks = 1:10)+
+      #scale_y_continuous(breaks = seq(0,1,0.2), limits = c(0,1))+
+      labs(y="Proportion caught",x="Age class",title=paste0(fg_atts$LongName," selectivity"))+
+      facet_grid(~t)
+    
+  } else {
+    
+    stop('This type does not exist')
+    
+  }
   
   return(plot_out)
-  
 }
 ```
 
 ```{r calc plots,warning=FALSE,message=F}
 # Here we calculate and store the actual plots
-# catch
-tic("Abundance plots: ")
+# catch ts
+tic("Catch time series plots: ")
 verts <- grps %>% filter(GroupType%in%c("FISH","SHARK","BIRD","MAMMAL")) %>% pluck('Name')
-verts_catch_at_a <- purrr::map(verts,~plot_catch(.))
+verts_catch_at_a <- purrr::map(verts,~plot_catch(., type = 'ts'))
 verts_names <- grps %>% filter(GroupType%in%c("FISH","SHARK","BIRD","MAMMAL")) %>% pluck('LongName')
+toc()
+
+# catch prop
+tic("Proportion of caught biomass per age class plots: ")
+verts_fraction_catch_by_a <- purrr::map(verts,~plot_catch(., type = 'prop'))
+toc()
+
+# selex
+tic("Proportion of caught individuals plots: ")
+verts_prop_caught_ind_at_a <- purrr::map(verts,~plot_catch(., type = 'selex'))
 toc()
 ```
 
-# Catch Timeseries {.tabset .tabset-pills}
+# Catch timeseries {.tabset .tabset-pills}
 
-```{r catch,fig.height=6,fig.width=8,results='asis'}
+```{r ts,fig.height=6,fig.width=8,results='asis'}
 if(length(verts_catch_at_a)>0){
   for(i in 1:length(verts_catch_at_a)){
     cat("  \n##",  verts_names[i],"  \n")
     print(verts_catch_at_a[[i]]) 
+    cat("  \n")
+  }
+}
+```
+
+# Fraction of catch per age class - biomass {.tabset .tabset-pills}
+
+Vertical dashed line indicates when catch.ts kicks in. Panel labeled 'input' with one bar shows the proportion of catch as specified in the parameter `CatchTS_agedistribXXX1` in harvest.prm. 
+
+```{r agedistrib,fig.height=6,fig.width=8,results='asis'}
+if(length(verts_fraction_catch_by_a)>0){
+  for(i in 1:length(verts_fraction_catch_by_a)){
+    cat("  \n##",  verts_names[i],"  \n")
+    print(verts_fraction_catch_by_a[[i]]) 
+    cat("  \n")
+  }
+}
+```
+
+# Proportion of caught individuals by age class - numbers {.tabset .tabset-pills}
+
+Panels represent simulation years. Last year not shown.  
+
+```{r selex,fig.height=6,fig.width=8,results='asis'}
+if(length(verts_prop_caught_ind_at_a)>0){
+  for(i in 1:length(verts_prop_caught_ind_at_a)){
+    cat("  \n##",  verts_names[i],"  \n")
+    print(verts_prop_caught_ind_at_a[[i]]) 
     cat("  \n")
   }
 }
